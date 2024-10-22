@@ -32,33 +32,61 @@ const initializeDBAndServer = async () => {
 
 initializeDBAndServer();
 
-// User Authentication
+// User Registration
 app.post("/register", async (request, response) => {
-  const { username, password } = request.body;
+  const { username, email, password } = request.body;
+
+  // Validate the request body
+  if (!username || !email || !password) {
+    return response
+      .status(400)
+      .send("Username, email, and password are required");
+  }
+
   const hashedPassword = await bcrypt.hash(password, 10);
-  const selectUserQuery = `SELECT * FROM users WHERE username = '${username}'`;
-  const dbUser = await db.get(selectUserQuery);
-  if (dbUser === undefined) {
-    const createUserQuery = `
-        INSERT INTO 
-          users (username, password) 
-        VALUES 
-          ('${username}', '${hashedPassword}')`;
-    const dbResponse = await db.run(createUserQuery);
-    const newUserId = dbResponse.lastID;
-    response.send(`Created new user with id ${newUserId}`);
-  } else {
-    response.status(400).send("User already exists");
+  const selectUserQuery = `SELECT * FROM users WHERE username = ? OR email = ?`;
+
+  try {
+    const dbUser = await db.get(selectUserQuery, [username, email]);
+    if (dbUser === undefined) {
+      const createUserQuery = `
+                INSERT INTO 
+                  users (username, email, password) 
+                VALUES 
+                  (?, ?, ?)`;
+      const dbResponse = await db.run(createUserQuery, [
+        username,
+        email,
+        hashedPassword,
+      ]);
+      const newUserId = dbResponse.lastID;
+      response.status(201).send(`Created new user with id ${newUserId}`);
+    } else {
+      response.status(400).send("User already exists");
+    }
+  } catch (error) {
+    console.error("Database error:", error.message);
+    response.status(500).send("Internal server error");
   }
 });
 
+// User Login
 app.post("/login", async (request, response) => {
   const { username, password } = request.body;
-  const selectUserQuery = `SELECT * FROM users WHERE username = '${username}'`;
-  const dbUser = await db.get(selectUserQuery);
-  if (dbUser === undefined) {
-    response.status(400).send("Invalid User");
-  } else {
+
+  // Validate the request body
+  if (!username || !password) {
+    return response.status(400).send("Username and password are required");
+  }
+
+  const selectUserQuery = `SELECT * FROM users WHERE username = ?`;
+
+  try {
+    const dbUser = await db.get(selectUserQuery, [username]);
+    if (dbUser === undefined) {
+      return response.status(400).send("Invalid User");
+    }
+
     const isPasswordMatched = await bcrypt.compare(password, dbUser.password);
     if (isPasswordMatched) {
       const payload = { user_id: dbUser.id, username };
@@ -69,6 +97,9 @@ app.post("/login", async (request, response) => {
     } else {
       response.status(400).send("Invalid Password");
     }
+  } catch (error) {
+    console.error("Database error:", error.message);
+    response.status(500).send("Internal server error");
   }
 });
 
@@ -119,7 +150,7 @@ app.get("/transactions", authenticateToken, async (req, res) => {
   });
 });
 
-app.get("/transactions/:id", async (req, res) => {
+app.get("/transactions/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { user_id } = req.user;
   const getTransactionQuery = `SELECT * FROM transactions WHERE id = ${id} AND user_id = ${user_id}`;
@@ -180,7 +211,7 @@ app.get("/reports/monthly-spending", authenticateToken, async (req, res) => {
       FROM 
         transactions
       JOIN 
-        categories ON transactions.category_id = categories.id
+        categories ON transactions.category = categories.id
       WHERE 
         transactions.user_id = ${user_id}
       GROUP BY 
